@@ -1,0 +1,16 @@
+OXDK_DIR    := $(HOME)/OXDK
+OXDK_TARGET := xbox360
+XEX_TITLE   := butterscotch360
+
+include srcs.mk
+
+DEFS := -DENABLE_VM_STUB_LOGS -DENABLE_WAD14 -DENABLE_WAD16 -DENABLE_WAD17 -DBZ_NO_STDIO \
+        -DBUTTERSCOTCH_COMMIT_DATE=\"unknown\" -DBUTTERSCOTCH_COMMIT_HASH=\"unknown\"
+INCS := -Icasefix -I../src/xbox360-xdk -I.. -I../src -I../src/debug_font -I../vendor/stb/ds \
+        -I../src/image -I../vendor/stb/image -I../vendor/stb/vorbis -I../vendor/md5 \
+        -I../vendor/sha1 -I../vendor/base64 -I../vendor/bzip2
+CFLAGS   := -O2 -Wall -include compat_msvc.h -include ./oxdk_extra.h $(DEFS) $(INCS)
+CXXFLAGS := -O2 -Wall -include compat_msvc.h -include ./oxdk_extra.h $(DEFS) $(INCS)
+XDK_LIBS := xapilib,d3d9,d3dx9,xgraphics,xaudio2,xmcore,xboxkrnl,libcMT
+
+include $(OXDK_DIR)/oxdk.mk
