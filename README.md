@@ -1,3 +1,10 @@
+> **Hotfix fork.** Community continuation of
+> [flaf1x/Butterscotch360-Refresh](https://github.com/flaf1x/Butterscotch360-Refresh)
+> (archived), with a new OXDK-based build for Xbox 360. Deltarune is playable to the
+> end on real hardware; Undertale support is experimental.
+> See [HOTFIX.md](HOTFIX.md) for what changed and how to build.
+> No game files or XDK files are included. You must provide your own.
+
 # Butterscotch360-Refresh
 
 Butterscotch360-Refresh is an experimental Xbox 360 refresh of
