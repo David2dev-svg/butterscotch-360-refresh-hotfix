@@ -24,7 +24,6 @@
 #include "stb_ds.h"
 #include "text_utils.h"
 
-extern "C" void Butterscotch_xdkDiagTrace(const char* fmt, ...);
 
 #ifdef _XBOX
 #ifdef __cplusplus
@@ -5465,7 +5464,7 @@ static RValue builtin_audio_create_stream(VMContext* ctx, RValue* args, MAYBE_UN
     if (audio == nullptr) return RValue_makeReal(-1.0);
     char* filename = RValue_toString(args[0]);
     int32_t streamIndex = audio->vtable->createStream(audio, filename);
-    Butterscotch_xdkDiagTrace("VM: audio_create_stream '%s' -> %d", filename, (int) streamIndex);
+    XDK_SURFACE_TRACE("VM: audio_create_stream '%s' -> %d", filename, (int) streamIndex);
     free(filename);
     return RValue_makeReal((GMLReal) streamIndex);
 }
@@ -5889,7 +5888,7 @@ static RValue builtin_directory_destroy(VMContext* ctx, RValue* args, int32_t ar
 static RValue builtin_file_text_open_read(VMContext* ctx, RValue* args, int32_t argCount) {
     if (1 > argCount) return RValue_makeReal(-1.0);
     const char* path = (args[0].type == RVALUE_STRING ? args[0].string : "");
-    Butterscotch_xdkDiagTrace("VM: file_text_open_read '%s'", path);
+    XDK_SURFACE_TRACE("VM: file_text_open_read '%s'", path);
     Runner* runner = ctx->runner;
     FileSystem* fs = runner->fileSystem;
 
@@ -7739,7 +7738,7 @@ static RValue builtin_buffer_load(MAYBE_UNUSED VMContext* ctx, RValue* args, MAY
     Runner* runner = ctx->runner;
     FileSystem* fs = runner->fileSystem;
     char* filename = RValue_toString(args[0]);
-    Butterscotch_xdkDiagTrace("VM: buffer_load '%s'", filename);
+    XDK_SURFACE_TRACE("VM: buffer_load '%s'", filename);
 
     uint8_t* fileData = nullptr;
     int32_t fileSize = 0;
@@ -12933,7 +12932,7 @@ static RValue builtin_json_decode(VMContext* ctx, RValue* args, int32_t argCount
         return RValue_makeUndefined();
     }
 
-    Butterscotch_xdkDiagTrace("VM: json_decode len=%d", (int) strlen(args[0].string ? args[0].string : ""));
+    XDK_SURFACE_TRACE("VM: json_decode len=%d", (int) strlen(args[0].string ? args[0].string : ""));
     Runner* runner = ctx->runner;
     int32_t mapIndex = dsMapCreate(runner);
     DsMapEntry **mapPtr = dsMapGet(runner, mapIndex);
