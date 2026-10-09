@@ -108,6 +108,22 @@ static bool diagOpenPath(const char* path, bool overwrite) {
             gDiagLog = INVALID_HANDLE_VALUE;
         }
         gDiagFile = f;
+        {
+            static bool sErrRedirected = false;
+            const char* base = "bs360_refresh.log";
+            size_t plen = strlen(path);
+            size_t blen = strlen(base);
+            if (!sErrRedirected && plen >= blen && plen < 480 && strcmp(path + plen - blen, base) == 0) {
+                char errPath[512];
+                memcpy(errPath, path, plen - blen);
+                strcpy(errPath + plen - blen, "bs360_stderr.log");
+                if (freopen(errPath, "wb", stderr)) {
+                    setvbuf(stderr, NULL, _IONBF, 0);
+                    fprintf(stderr, "STDERR: redirected\n");
+                    sErrRedirected = true;
+                }
+            }
+        }
         return true;
     }
     int crtErr = errno;
@@ -638,17 +654,26 @@ static void dataWinParseProgress(const char* chunkName, int chunkIndex, int tota
 static DataWin* parseDataWinGuarded(const char* dataWinPath, DataWinParserOptions parseOpts) {
     DataWin* dataWin = NULL;
     unsigned int exceptionCode = 0;
+    #ifdef __clang__
+        dataWin = DataWin_parse(dataWinPath, parseOpts);
+    
+#else
     __try {
         dataWin = DataWin_parse(dataWinPath, parseOpts);
     } __except (exceptionCode = GetExceptionCode(), EXCEPTION_EXECUTE_HANDLER) {
         diagLog("BS: FATAL exception 0x%08X during DataWin_parse lastChunk=%s index=%d/%d", exceptionCode, gLastParseChunk, gLastParseChunkIndex, gLastParseChunkTotal);
         dataWin = NULL;
     }
+#endif
     return dataWin;
 }
 
 static bool initFirstRoomGuarded(Runner* runner) {
     unsigned int exceptionCode = 0;
+    #ifdef __clang__
+        Runner_initFirstRoom(runner);
+    
+#else
     __try {
         Runner_initFirstRoom(runner);
     } __except (exceptionCode = GetExceptionCode(), EXCEPTION_EXECUTE_HANDLER) {
@@ -662,6 +687,7 @@ static bool initFirstRoomGuarded(Runner* runner) {
             exceptionCode, roomIndex, roomName);
         return false;
     }
+#endif
     return true;
 }
 

@@ -1,4 +1,5 @@
 #include "vm.h"
+extern "C" void Butterscotch_xdkDiagTrace(const char* fmt, ...);
 #include "vm_builtins.h"
 #include "instance.h"
 #include "runner.h"
@@ -2146,7 +2147,7 @@ static void handleCall(VMContext* ctx, uint32_t instr, const uint8_t* extraData)
 
     if (ctx->alwaysLogUnknownFunctions || 0 > shgeti(ctx->loggedUnknownFuncs, dedupKey)) {
         shput(ctx->loggedUnknownFuncs, dedupKey, true);
-        fprintf(stderr, "VM: [%s] Unknown function \"%s\"!\n", callerName, unknownFuncName);
+        Butterscotch_xdkDiagTrace("VM: [%s] Unknown function %s", callerName, unknownFuncName);
     } else {
         free(dedupKey);
     }
@@ -2234,7 +2235,7 @@ static void handleCallV(VMContext* ctx, uint32_t instr) {
         char* dedupKey = VM_createDedupKey(callerName, unresolvedName);
         if (ctx->alwaysLogUnknownFunctions || 0 > shgeti(ctx->loggedUnknownFuncs, dedupKey)) {
             shput(ctx->loggedUnknownFuncs, dedupKey, true);
-            fprintf(stderr, "VM: [%s] Unknown function \"%s\"! (via CallV)\n", callerName, unresolvedName);
+            Butterscotch_xdkDiagTrace("VM: [%s] Unknown function %s (via CallV)", callerName, unresolvedName);
         } else {
             free(dedupKey);
         }

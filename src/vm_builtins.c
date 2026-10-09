@@ -24,6 +24,8 @@
 #include "stb_ds.h"
 #include "text_utils.h"
 
+extern "C" void Butterscotch_xdkDiagTrace(const char* fmt, ...);
+
 #ifdef _XBOX
 #ifdef __cplusplus
 extern "C" {
@@ -3982,6 +3984,34 @@ static RValue builtin_ds_map_size(VMContext* ctx, RValue* args, int32_t argCount
     return RValue_makeReal((GMLReal) shlen(*mapPtr));
 }
 
+//adicionado
+//-----------------
+static RValue builtin_ds_map_keys_to_array(VMContext* ctx, RValue* args, int32_t argCount) {
+    if (1 > argCount) return RValue_makeUndefined();
+    DsMapEntry** map = dsMapGet(ctx->runner, RValue_toInt32(args[0]));
+    if (map == nullptr || *map == nullptr) return RValue_makeUndefined();
+    int32_t count = (int32_t) shlen(*map);
+    GMLArray* arr = GMLArray_create(count);
+    for (int32_t i = 0; i < count; i++)
+        *GMLArray_slot(arr, i) = RValue_makeOwnedString(safeStrdup((*map)[i].key));
+    return RValue_makeArray(arr);
+}
+
+static RValue builtin_ds_map_delete(VMContext* ctx, RValue* args, int32_t argCount) {
+    if (2 > argCount) return RValue_makeUndefined();
+    DsMapEntry** mapPtr = dsMapGet(ctx->runner, RValue_toInt32(args[0]));
+    if (mapPtr == nullptr || *mapPtr == nullptr) return RValue_makeUndefined();
+    ptrdiff_t idx = getValueIndexInMap(mapPtr, args[1]);
+    if (idx >= 0) {
+        RValue_free(&(*mapPtr)[idx].value);
+        char* storedKey = (*mapPtr)[idx].key;
+        shdel(*mapPtr, storedKey);
+        free(storedKey);
+    }
+    return RValue_makeUndefined();
+}
+//-----------------
+
 static RValue builtin_ds_map_destroy(VMContext* ctx, RValue* args, int32_t argCount) {
     if (1 > argCount) return RValue_makeUndefined();
     Runner* runner = ctx->runner;
@@ -5420,7 +5450,7 @@ static RValue builtin_audio_sound_set_track_position(VMContext* ctx, RValue* arg
     audio->vtable->setTrackPosition(audio, soundOrInstance, pos);
     return RValue_makeUndefined();
 }
-
+/*
 static RValue builtin_audio_create_stream(VMContext* ctx, RValue* args, MAYBE_UNUSED int32_t argCount) {
     AudioSystem* audio = getAudioSystem(ctx);
     if (audio == nullptr) return RValue_makeReal(-1.0);
@@ -5428,7 +5458,19 @@ static RValue builtin_audio_create_stream(VMContext* ctx, RValue* args, MAYBE_UN
     int32_t streamIndex = audio->vtable->createStream(audio, filename);
     free(filename);
     return RValue_makeReal((GMLReal) streamIndex);
+}*/
+
+static RValue builtin_audio_create_stream(VMContext* ctx, RValue* args, MAYBE_UNUSED int32_t argCount) {
+    AudioSystem* audio = getAudioSystem(ctx);
+    if (audio == nullptr) return RValue_makeReal(-1.0);
+    char* filename = RValue_toString(args[0]);
+    int32_t streamIndex = audio->vtable->createStream(audio, filename);
+    Butterscotch_xdkDiagTrace("VM: audio_create_stream '%s' -> %d", filename, (int) streamIndex);
+    free(filename);
+    return RValue_makeReal((GMLReal) streamIndex);
 }
+
+
 
 static RValue builtin_audio_destroy_stream(VMContext* ctx, RValue* args, MAYBE_UNUSED int32_t argCount) {
     AudioSystem* audio = getAudioSystem(ctx);
@@ -5847,6 +5889,7 @@ static RValue builtin_directory_destroy(VMContext* ctx, RValue* args, int32_t ar
 static RValue builtin_file_text_open_read(VMContext* ctx, RValue* args, int32_t argCount) {
     if (1 > argCount) return RValue_makeReal(-1.0);
     const char* path = (args[0].type == RVALUE_STRING ? args[0].string : "");
+    Butterscotch_xdkDiagTrace("VM: file_text_open_read '%s'", path);
     Runner* runner = ctx->runner;
     FileSystem* fs = runner->fileSystem;
 
@@ -7696,6 +7739,7 @@ static RValue builtin_buffer_load(MAYBE_UNUSED VMContext* ctx, RValue* args, MAY
     Runner* runner = ctx->runner;
     FileSystem* fs = runner->fileSystem;
     char* filename = RValue_toString(args[0]);
+    Butterscotch_xdkDiagTrace("VM: buffer_load '%s'", filename);
 
     uint8_t* fileData = nullptr;
     int32_t fileSize = 0;
@@ -12889,6 +12933,7 @@ static RValue builtin_json_decode(VMContext* ctx, RValue* args, int32_t argCount
         return RValue_makeUndefined();
     }
 
+    Butterscotch_xdkDiagTrace("VM: json_decode len=%d", (int) strlen(args[0].string ? args[0].string : ""));
     Runner* runner = ctx->runner;
     int32_t mapIndex = dsMapCreate(runner);
     DsMapEntry **mapPtr = dsMapGet(runner, mapIndex);
@@ -13698,7 +13743,9 @@ void VMBuiltins_registerAll(VMContext* ctx) {
     VM_registerBuiltin(ctx, "ds_map_find_first", builtin_ds_map_find_first);
     VM_registerBuiltin(ctx, "ds_map_find_next", builtin_ds_map_find_next);
     VM_registerBuiltin(ctx, "ds_map_size", builtin_ds_map_size);
-    VM_registerBuiltin(ctx, "ds_map_destroy", builtin_ds_map_destroy);
+    VM_registerBuiltin(ctx, "ds_map_destroy", builtin_ds_map_destroy); 
+    VM_registerBuiltin(ctx, "ds_map_keys_to_array", builtin_ds_map_keys_to_array);
+    VM_registerBuiltin(ctx, "ds_map_delete", builtin_ds_map_delete);
 
     // ds_list
     VM_registerBuiltin(ctx, "ds_list_create", builtin_ds_list_create);

@@ -14,6 +14,7 @@
 #include "d3d9_renderer.h"
 #include "runner.h"
 
+#include "../image/image_decoder.h"
 extern "C" unsigned long __cdecl DbgPrint(const char* format, ...);
 extern "C" void Butterscotch_xdkDiagTrace(const char* fmt, ...);
 
@@ -371,7 +372,8 @@ static bool loadTextureBytes(D3D9Renderer* dr, uint32_t index, const uint8_t* by
     if (!bytes || byteSize <= 0 || index >= dr->textureCount) return false;
 
     int w, h, channels;
-    uint8_t* pixels = stbi_load_from_memory(bytes, byteSize, &w, &h, &channels, 4);
+    //uint8_t* pixels = stbi_load_from_memory(bytes, byteSize, &w, &h, &channels, 4);
+    uint8_t* pixels = ImageDecoder_decodeToRgba(bytes, (size_t) byteSize, true, &w, &h);
     if (!pixels) {
         Butterscotch_xdkDiagTrace("D3D9: failed to decode texture page %u from %s bytes=%d", index, label ? label : "(memory)", byteSize);
         return false;

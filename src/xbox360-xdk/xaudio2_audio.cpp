@@ -322,6 +322,25 @@ static DataWin* getAudioGroup(XdkAudioSystem* xa, int32_t groupIndex) {
     return xa->base.audioGroups[0];
 }
 
+static Sound* soundAtSafe(DataWin* dw, int32_t idx) {
+    static Sound dummy;
+    static bool dummyInit = false;
+    if (!dummyInit) {
+        memset(&dummy, 0, sizeof(dummy));
+        dummy.name = (char*)"";
+        dummy.volume = 1.0f;
+        dummy.pitch = 1.0f;
+        dummyInit = true;
+    }
+    if (!dw || idx < 0 || (uint32_t)idx >= dw->sond.count) return &dummy;
+    return dw->sond.sounds + idx;
+}
+
+#define XDK_STREAM_HANDLE_BASE 50000
+#define XDK_MAX_STREAMS 32
+static char gStreamPaths[XDK_MAX_STREAMS][260];
+static bool gStreamUsed[XDK_MAX_STREAMS];
+
 static char* resolveExternalPath(XdkAudioSystem* xa, Sound* sound) {
     const char* file = sound->file;
     if (!file || !file[0] || !xa->fileSystem) return NULL;
@@ -352,6 +371,7 @@ static bool readWholeFile(const char* path, uint8_t** outData, int* outSize) {
     *outData = NULL;
     *outSize = 0;
     FILE* f = fopen(path, "rb");
+    Butterscotch_xdkDiagTrace("AUD2: try file '%s' -> %s", path, f ? "OK" : "MISSING");
     if (!f) return false;
     fseek(f, 0, SEEK_END);
     long size = ftell(f);
@@ -574,14 +594,13 @@ static XdkDecodedSound* decodeSoundCached(XdkAudioSystem* xa, int32_t soundIndex
         if (cache->failed) return NULL;
     }
 
-    Sound* baseSound = &baseDw->sond.sounds[soundIndex];
+    Sound* baseSound = soundAtSafe(baseDw, soundIndex);
     DataWin* dw = getAudioGroup(xa, baseSound->audioGroup);
     Sound* sound = baseSound;
-    if (dw && (uint32_t)soundIndex < dw->sond.count) {
-        sound = &dw->sond.sounds[soundIndex];
-    } else {
-        dw = baseDw;
+    if (dw && dw != baseDw && (uint32_t)soundIndex < dw->sond.count) {
+        sound = soundAtSafe(dw, soundIndex);
     }
+    if (!dw) dw = baseDw;
 
     uint8_t* bytes = NULL;
     int byteCount = 0;
@@ -924,7 +943,7 @@ void XdkAudioSystem_onRoomChanged(AudioSystem* audio, int32_t roomIndex, const c
             if (!inst->active || !inst->music) continue;
             const char* stoppedName = NULL;
             if (dw && inst->soundIndex >= 0 && (uint32_t)inst->soundIndex < dw->sond.count) {
-                stoppedName = dw->sond.sounds[inst->soundIndex].name;
+                stoppedName = soundAtSafe(dw, inst->soundIndex)->name;
             }
             audioTrace(true, "AUD2: gameover cut music idx=%d name=%s instance=%d",
                 inst->soundIndex, stoppedName ? stoppedName : "?", inst->instanceId);
@@ -1037,7 +1056,7 @@ static void xdkAudioUpdate(AudioSystem* audio, float deltaTime) {
             DataWin* dw = getAudioGroup(xa, 0);
             const char* stoppedName = NULL;
             if (dw && inst->soundIndex >= 0 && (uint32_t)inst->soundIndex < dw->sond.count) {
-                stoppedName = dw->sond.sounds[inst->soundIndex].name;
+                stoppedName = soundAtSafe(dw, inst->soundIndex)->name;
             }
             if (inst->music) {
                 audioTrace(true, "AUD2: finished music idx=%d name=%s instance=%d",
@@ -1053,10 +1072,46 @@ static int32_t xdkPlaySound(AudioSystem* audio, int32_t soundIndex, int32_t prio
     XdkAudioSystem* xa = (XdkAudioSystem*)audio;
     if (!xa->initialized) return -1;
 
+    if (soundIndex >= XDK_STREAM_HANDLE_BASE && soundIndex < XDK_STREAM_HANDLE_BASE + XDK_MAX_STREAMS) {
+        int32_t st = soundIndex - XDK_STREAM_HANDLE_BASE;
+        if (!gStreamUsed[st]) return -1;
+        XdkSoundInstance* sinst = findFreeSlot(xa);
+        if (!sinst) {
+            audioTrace(true, "AUD2: no free slot for stream handle=%d", soundIndex);
+            return -1;
+        }
+        memset(sinst, 0, sizeof(XdkSoundInstance));
+        int32_t sslot = (int32_t)(sinst - Instances(xa)->instances);
+        sinst->active = true;
+        sinst->soundIndex = soundIndex;
+        sinst->instanceId = XDK_SOUND_INSTANCE_ID_BASE + sslot;
+        sinst->priority = priority;
+        sinst->loop = loop;
+        sinst->music = true;
+        sinst->streaming = true;
+        sinst->startedTick = nowMs();
+        sinst->currentGain = 1.0f;
+        sinst->targetGain = 1.0f;
+        sinst->startGain = 1.0f;
+        sinst->pitch = 1.0f;
+        sinst->soundVolume = 1.0f;
+        sinst->soundPitch = 1.0f;
+        xa->nextInstanceCounter++;
+        bool sok = createStreamingVoiceForInstance(xa, sinst, gStreamPaths[st], true);
+        audioTrace(true, "AUD2: play stream handle=%d loop=%d path=%s ok=%d", soundIndex, loop ? 1 : 0, gStreamPaths[st], sok ? 1 : 0);
+        if (!sok) {
+            destroyInstance(sinst);
+            return -1;
+        }
+        return sinst->instanceId;
+    }
+
     DataWin* dw = getAudioGroup(xa, 0);
     if (!dw || soundIndex < 0 || (uint32_t)soundIndex >= dw->sond.count) return -1;
 
-    Sound* sound = &dw->sond.sounds[soundIndex];
+
+
+    Sound* sound = soundAtSafe(dw, soundIndex);
     bool isMusic = isMusicSoundName(sound->name);
     static bool tracedSounds[XDK_AUDIO_MAX_CACHED_SOUNDS];
     bool traceThisSound = false;
@@ -1085,7 +1140,7 @@ static int32_t xdkPlaySound(AudioSystem* audio, int32_t soundIndex, int32_t prio
                     soundIndex, sound->name ? sound->name : "?", active->instanceId);
                 return active->instanceId;
             }
-            Sound* activeSound = &dw->sond.sounds[active->soundIndex];
+            Sound* activeSound = soundAtSafe(dw, active->soundIndex);
             if (isMusicSoundName(activeSound->name)) {
                 if (canLayerMusicSoundNames(activeSound->name, sound->name)) {
                     audioTrace(true, "AUD2: keep layered music oldIdx=%d oldName=%s newIdx=%d newName=%s",
@@ -1196,7 +1251,7 @@ static void xdkStopSound(AudioSystem* audio, int32_t soundOrInstance) {
             DataWin* dw = getAudioGroup(xa, 0);
             const char* stoppedName = NULL;
             if (dw && inst->soundIndex >= 0 && (uint32_t)inst->soundIndex < dw->sond.count) {
-                stoppedName = dw->sond.sounds[inst->soundIndex].name;
+                stoppedName = soundAtSafe(dw, inst->soundIndex)->name;
             }
             bool stoppedMusic = inst->music;
             audioTrace(stoppedMusic, "AUD2: stop instance=%d idx=%d name=%s music=%d",
@@ -1212,7 +1267,7 @@ static void xdkStopSound(AudioSystem* audio, int32_t soundOrInstance) {
             DataWin* dw = getAudioGroup(xa, 0);
             const char* stoppedName = NULL;
             if (dw && soundOrInstance >= 0 && (uint32_t)soundOrInstance < dw->sond.count) {
-                stoppedName = dw->sond.sounds[soundOrInstance].name;
+                stoppedName = soundAtSafe(dw, soundOrInstance)->name;
             }
             bool stoppedMusic = arr->instances[i].music;
             audioTrace(stoppedMusic, "AUD2: stop sound idx=%d name=%s instance=%d music=%d",
@@ -1234,7 +1289,7 @@ static void xdkStopAll(AudioSystem* audio) {
             XdkSoundInstance* inst = &arr->instances[i];
             const char* stoppedName = NULL;
             if (dw && inst->soundIndex >= 0 && (uint32_t)inst->soundIndex < dw->sond.count) {
-                stoppedName = dw->sond.sounds[inst->soundIndex].name;
+                stoppedName = soundAtSafe(dw, inst->soundIndex)->name;
             }
             if (inst->music) {
                 audioTrace(true, "AUD2: stop all music idx=%d name=%s instance=%d",
@@ -1452,7 +1507,7 @@ static float xdkGetSoundLength(AudioSystem* audio, int32_t soundOrInstance) {
 
     DataWin* dw = getAudioGroup(xa, 0);
     if (dw && soundOrInstance >= 0 && (uint32_t)soundOrInstance < dw->sond.count) {
-        Sound* sound = &dw->sond.sounds[soundOrInstance];
+        Sound* sound = soundAtSafe(dw, soundOrInstance);
         if (shouldStreamExternalMusic(sound)) {
             char* path = resolveExternalPath(xa, sound);
             if (path) {
@@ -1507,6 +1562,7 @@ static void xdkGroupLoad(AudioSystem* audio, int32_t groupIndex) {
     _snprintf(filename, sizeof(filename), "audiogroup%d.dat", groupIndex);
     filename[sizeof(filename) - 1] = '\0';
     char* path = xa->fileSystem->vtable->resolvePath(xa->fileSystem, filename);
+    Butterscotch_xdkDiagTrace("AUD2: stream path '%s'", path);
     if (!path) return;
 
     DataWinParserOptions options;
@@ -1534,15 +1590,45 @@ static bool xdkGroupIsLoaded(AudioSystem* audio, int32_t groupIndex) {
 }
 
 static int32_t xdkCreateStream(AudioSystem* audio, const char* filename) {
-    (void)audio;
-    (void)filename;
+    XdkAudioSystem* xa = (XdkAudioSystem*)audio;
+    if (!xa->initialized || !filename || !filename[0]) return -1;
+    if (!xa->fileSystem->vtable->fileExists(xa->fileSystem, filename)) {
+        audioTrace(true, "AUD2: createStream missing file %s", filename);
+        return -1;
+    }
+    char* path = xa->fileSystem->vtable->resolvePath(xa->fileSystem, filename);
+    if (!path) return -1;
+    for (int32_t i = 0; i < XDK_MAX_STREAMS; i++) {
+        if (!gStreamUsed[i]) {
+            strncpy(gStreamPaths[i], path, sizeof(gStreamPaths[i]) - 1);
+            gStreamPaths[i][sizeof(gStreamPaths[i]) - 1] = '\0';
+            gStreamUsed[i] = true;
+            free(path);
+            audioTrace(true, "AUD2: createStream handle=%d path=%s", XDK_STREAM_HANDLE_BASE + i, gStreamPaths[i]);
+            return XDK_STREAM_HANDLE_BASE + i;
+        }
+    }
+    free(path);
+    audioTrace(true, "AUD2: createStream no free slot");
     return -1;
 }
 
 static bool xdkDestroyStream(AudioSystem* audio, int32_t streamIndex) {
-    (void)audio;
-    (void)streamIndex;
-    return false;
+    XdkAudioSystem* xa = (XdkAudioSystem*)audio;
+    int32_t st = streamIndex - XDK_STREAM_HANDLE_BASE;
+    if (st < 0 || st >= XDK_MAX_STREAMS || !gStreamUsed[st]) return false;
+    XdkInstanceArray* arr = Instances(xa);
+    int32_t stopped = 0;
+    for (int i = 0; i < XDK_MAX_SOUND_INSTANCES; i++) {
+        XdkSoundInstance* inst = &arr->instances[i];
+        if (inst->active && inst->streaming && inst->soundIndex == streamIndex) {
+            destroyInstance(inst);
+            stopped++;
+        }
+    }
+    audioTrace(true, "AUD2: destroyStream handle=%d stoppedInstances=%d", streamIndex, stopped);
+    gStreamUsed[st] = false;
+    return true;
 }
 
 static AudioSystemVtable xdkAudioVtable = {};

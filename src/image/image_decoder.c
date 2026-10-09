@@ -120,6 +120,13 @@ static uint8_t* decodeQoi(const uint8_t* data, size_t dataSize, int* outW, int* 
 //   bytes 8.. (or 12.. if gm2022_5) = raw BZip2 stream, which decompresses into a full "fioq" QOI file.
 static uint8_t* decodeBz2Qoi(const uint8_t* blob, size_t blobSize, bool gm2022_5, int* outW, int* outH) {
     size_t headerSize = gm2022_5 ? COMPRESSED_QOI_HEADER_SIZE_NEW : COMPRESSED_QOI_HEADER_SIZE_OLD;
+
+    if (blobSize >= 15 && memcmp(blob + 12, "BZh", 3) == 0) {
+    headerSize = COMPRESSED_QOI_HEADER_SIZE_NEW;
+ }  else if (blobSize >= 11 && memcmp(blob + 8, "BZh", 3) == 0) {
+    headerSize = COMPRESSED_QOI_HEADER_SIZE_OLD;
+ }
+
     if (headerSize > blobSize) return nullptr;
 
     int width = blob[4] | (blob[5] << 8);
