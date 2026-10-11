@@ -1,4 +1,8 @@
 # Butterscotch360-Refresh hotfix (Xbox 360, OXDK build)
+## Which build do I use?
+- **OXDK + clang (tested, used for every release here):** see "Build" below.
+- **Visual Studio + official Xbox 360 SDK (upstream's original project):** `Butterscotch360.sln` still exists, but it has NOT been re-tested after the fixes in this fork. If it fails for you, please open an issue with the lines that contain `error C` and your XDK version.
+
 
 Fixes and a new build system on top of flaf1x/Butterscotch360-Refresh (archived).
 Original history and license are kept. Credit to the Butterscotch project and to
