@@ -12,8 +12,59 @@ extern "C" void Butterscotch_xdkDiagTrace(const char* fmt, ...);
 //---------
 // ===[ Vtable Implementations ]===
 
+// Root (first game, the launcher) base path, used as a read-only fallback for shared "mus/" files.
+static char gXdkRootBase[512] = "";
+
+static bool xdkPathExists(const char* path) {
+    HANDLE h = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (h == INVALID_HANDLE_VALUE) return false;
+    CloseHandle(h);
+    return true;
+}
+
+static bool xdkIsSharedAsset(const char* rel) {
+    return (_strnicmp(rel, "mus/", 4) == 0) || (_strnicmp(rel, "mus\\", 4) == 0);
+}
+
+// collapses "." and ".." segments of a backslash path, in place (the XDK does not resolve ".." itself)
+static void xdkCollapseDots(char* p) {
+    char tmp[512];
+    char* parts[64];
+    char* keepParts[64];
+    int n = 0;
+    int keep = 0;
+    size_t len0 = strlen(p);
+    bool trailing = len0 > 0 && p[len0 - 1] == '\\';
+    if (len0 >= sizeof(tmp)) return;
+    strcpy(tmp, p);
+    char* s = tmp;
+    while (n < 64) {
+        parts[n++] = s;
+        char* b = strchr(s, '\\');
+        if (!b) break;
+        *b = 0;
+        s = b + 1;
+    }
+    for (int i = 0; i < n; i++) {
+        if (parts[i][0] == 0 && i > 0) continue;
+        if (strcmp(parts[i], ".") == 0) continue;
+        if (strcmp(parts[i], "..") == 0) { if (keep > 1) keep--; continue; }
+        keepParts[keep++] = parts[i];
+    }
+    p[0] = 0;
+    for (int i = 0; i < keep; i++) {
+        if (i > 0) strcat(p, "\\");
+        strcat(p, keepParts[i]);
+    }
+    if (trailing && keep > 0) strcat(p, "\\");
+}
+
 static char* xdkResolvePath(FileSystem* fs, const char* relativePath) {
     XdkFileSystem* xfs = (XdkFileSystem*)fs;
+    if (!gXdkRootBase[0]) {
+        strncpy(gXdkRootBase, xfs->basePath, sizeof(gXdkRootBase) - 1);
+        gXdkRootBase[sizeof(gXdkRootBase) - 1] = 0;
+    }
     // Se o caminho ja traz uma unidade (ex.: "game:\\" ou "game:/"), usa como esta.
     const char* colon = strchr(relativePath, ':');
     const char* firstSep = strpbrk(relativePath, "/\\");
@@ -29,6 +80,24 @@ static char* xdkResolvePath(FileSystem* fs, const char* relativePath) {
     // Convert forward slashes to backslashes for Xbox 360
     for (char* p = result + baseLen; *p; p++) {
         if (*p == '/') *p = '\\';
+    }
+    xdkCollapseDots(result);
+    if (!hasDrive && gXdkRootBase[0] && xdkIsSharedAsset(relativePath)
+        && strcmp(gXdkRootBase, xfs->basePath) != 0 && !xdkPathExists(result)) {
+        size_t rl = strlen(gXdkRootBase);
+        char* alt = (char*)malloc(rl + relLen + 1);
+        if (alt) {
+            memcpy(alt, gXdkRootBase, rl);
+            memcpy(alt + rl, relativePath, relLen + 1);
+            for (char* q = alt + rl; *q; q++) {
+                if (*q == '/') *q = '\\';
+            }
+            if (xdkPathExists(alt)) {
+                free(result);
+                return alt;
+            }
+            free(alt);
+        }
     }
     return result;
 }

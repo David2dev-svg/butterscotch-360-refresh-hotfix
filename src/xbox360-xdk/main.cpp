@@ -862,6 +862,98 @@ static void drawRunnerFrame(Runner* runner, Renderer* renderer, int32_t gameW, i
 
 // ===[ Main Entry Point ]===
 
+// splits launch parameters into argv[1..] (quotes supported); argv[0] is kept
+static void xdkSplitLaunchParams(const char* params, char* store, size_t storeSize, char** argv, int* argc, int maxArgs) {
+    int n = 1;
+    size_t w = 0;
+    const char* c = params;
+    while (*c && n < maxArgs) {
+        while (*c == ' ' || *c == '\t') c++;
+        if (!*c) break;
+        char* start = store + w;
+        bool quoted = false;
+        if (*c == '"') { quoted = true; c++; }
+        while (*c && w + 1 < storeSize) {
+            if (quoted ? (*c == '"') : (*c == ' ' || *c == '\t')) break;
+            store[w++] = *c++;
+        }
+        if (quoted && *c == '"') c++;
+        store[w++] = 0;
+        argv[n++] = start;
+    }
+    *argc = n;
+}
+
+// collapses "." and ".." segments of a backslash path, in place
+static void xdkNormalizePath(char* p) {
+    char tmp[512];
+    char* parts[64];
+    char* keepParts[64];
+    int n = 0;
+    int keep = 0;
+    strncpy(tmp, p, sizeof(tmp) - 1);
+    tmp[sizeof(tmp) - 1] = 0;
+    char* s = tmp;
+    while (n < 64) {
+        parts[n++] = s;
+        char* b = strchr(s, '\\');
+        if (!b) break;
+        *b = 0;
+        s = b + 1;
+    }
+    for (int i = 0; i < n; i++) {
+        if (parts[i][0] == 0 && i > 0) continue;
+        if (strcmp(parts[i], ".") == 0) continue;
+        if (strcmp(parts[i], "..") == 0) { if (keep > 1) keep--; continue; }
+        keepParts[keep++] = parts[i];
+    }
+    p[0] = 0;
+    for (int i = 0; i < keep; i++) {
+        if (i > 0) strcat(p, "\\");
+        strcat(p, keepParts[i]);
+    }
+}
+
+// game_change: builds <parent of current data.win>\<workingDir>\<file from "-game file">
+static char* xdkBuildGameChangePath(const char* currentPath, const char* workingDir, const char* launchParams) {
+    const char* g = strstr(launchParams, "-game");
+    if (!g) return NULL;
+    g += 5;
+    while (*g == ' ' || *g == '\t') g++;
+    if (*g == '"') g++;
+    char file[260];
+    size_t n = 0;
+    while (*g && *g != ' ' && *g != '\t' && *g != '"' && n < sizeof(file) - 1) file[n++] = *g++;
+    file[n] = 0;
+    if (n == 0) return NULL;
+
+    char parent[512];
+    strncpy(parent, currentPath, sizeof(parent) - 1);
+    parent[sizeof(parent) - 1] = 0;
+    char* ls = strrchr(parent, '\\');
+    char* lb = strrchr(parent, '/');
+    char* sep = (ls > lb) ? ls : lb;
+    if (sep) *sep = 0; else { parent[0] = '.'; parent[1] = 0; }
+
+    char wd[260];
+    strncpy(wd, workingDir, sizeof(wd) - 1);
+    wd[sizeof(wd) - 1] = 0;
+    char* w = wd;
+    while (*w == '/' || *w == '\\') w++;
+    size_t wl = strlen(w);
+    while (wl > 0 && (w[wl - 1] == '/' || w[wl - 1] == '\\')) w[--wl] = 0;
+
+    size_t len = strlen(parent) + strlen(w) + strlen(file) + 3;
+    char* out = (char*) malloc(len);
+    if (!out) return NULL;
+    if (wl > 0) _snprintf(out, len, "%s\\%s\\%s", parent, w, file);
+    else _snprintf(out, len, "%s\\%s", parent, file);
+    out[len - 1] = 0;
+    for (char* c = out; *c; c++) if (*c == '/') *c = '\\';
+    xdkNormalizePath(out);
+    return out;
+}
+
 VOID __cdecl main() {
     diagOpenFallback();
     diagLog("BUILD parse_guard_diag_v2 %s %s", __DATE__, __TIME__);
@@ -930,6 +1022,12 @@ VOID __cdecl main() {
         for (;;) { } // hang instead of crash for debugging
     }
 
+    char* gcOwnedPath = NULL;
+    char gcArgStore[1024];
+    char* gcArgv[32];
+    int gcArgc = 1;
+    gcArgv[0] = (char*)"default.xex";
+    for (;;) {  // one iteration per game (game_change reloads here)
     bool loadingOk = loadingInit(&gLoadingScreen, pd3dDevice, dataWinPath);
     if (loadingOk) loadingDraw(&gLoadingScreen, 0.02f, "Starting Butterscotch360");
 
@@ -1016,6 +1114,8 @@ VOID __cdecl main() {
     runner->setWindowSize = xdkSetWindowSize;
     runner->osType = OS_WINDOWS;
     diagLog("BS: 12b runner created with renderer/audio initialized");
+    Runner_setGameArgs(runner, gcArgv, (int32_t) gcArgc);
+    diagLog("BS: game args count=%d", gcArgc);
 
     // Parse CONFIG.JSN options
     if (configRoot) {
@@ -1126,7 +1226,7 @@ VOID __cdecl main() {
     int32_t lastRoomId = runner->currentRoomIndex;
     diagOverlayPollSystem();
 
-    while (!runner->shouldExit) {
+    while (!runner->shouldExit && runner->pendingWorkingDirectory == NULL) {
         QueryPerformanceCounter(&currentTime);
         double deltaTime = (double)(currentTime.QuadPart - lastTime.QuadPart) / (double)freq.QuadPart;
         lastTime = currentTime;
@@ -1270,6 +1370,21 @@ VOID __cdecl main() {
         }
     }
 
+    // ===[ game_change request (Deltarune chapter switch) ]===
+    char* gcNextPath = NULL;
+    if (runner->pendingWorkingDirectory != NULL && runner->pendingLaunchParameters != NULL) {
+        diagLog("BS: GAME_CHANGE requested dir='%s' params='%s'", runner->pendingWorkingDirectory, runner->pendingLaunchParameters);
+        gcNextPath = xdkBuildGameChangePath(dataWinPath, runner->pendingWorkingDirectory, runner->pendingLaunchParameters);
+        if (gcNextPath) xdkSplitLaunchParams(runner->pendingLaunchParameters, gcArgStore, sizeof(gcArgStore), gcArgv, &gcArgc, 32);
+        if (gcNextPath) {
+            FILE* t = fopen(gcNextPath, "rb");
+            diagLog("BS: GAME_CHANGE new data.win='%s' exists=%d", gcNextPath, t ? 1 : 0);
+            if (t) fclose(t); else { free(gcNextPath); gcNextPath = NULL; }
+        } else {
+            diagLog("BS: GAME_CHANGE could not build a path");
+        }
+    }
+
     // ===[ Cleanup ]===
     if (runner->audioSystem) {
         runner->audioSystem->vtable->destroy(runner->audioSystem);
@@ -1277,7 +1392,18 @@ VOID __cdecl main() {
     }
     renderer->vtable->destroy(renderer);
     loadingDestroy(&gDiagOverlayScreen);
+    Runner_free(runner);
+    VM_free(vm);
     DataWin_free(dataWin);
+    if (gcNextPath) {
+        diagLog("BS: GAME_CHANGE reloading %s", gcNextPath);
+        free(gcOwnedPath);
+        gcOwnedPath = gcNextPath;
+        dataWinPath = gcOwnedPath;
+        continue;
+    }
+    break;
+    }  // end of for(;;) game loop
     pd3dDevice->Release();
     pD3D->Release();
 
