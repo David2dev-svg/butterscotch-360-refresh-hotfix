@@ -20,12 +20,13 @@ much newer Butterscotch codebase and adds the Xbox 360-specific runtime pieces
 needed for current testing:
 
 - Visual Studio 2010 / Xbox 360 SDK project files.
+- OXDK
 - Xbox 360 D3D9 renderer with point-sampled pixel output.
 - XAudio2 audio backend with streamed OGG music playback.
 - Startup splash/progress screen.
 - Runtime diagnostics written to `bs360_refresh.log`.
 - Toggleable on-screen diagnostics with `LB + RB`.
-- Undertale and NXTale compatibility fixes tested on real hardware.
+- Undertale, NXTale, deltarune compatibility fixes tested on real hardware.
 
 Also, yes, this is double vibe-coded in the funniest possible way: the original
 Butterscotch-360 port was reportedly brought up with Claude Code, and this
@@ -111,8 +112,9 @@ Notes:
 Requirements:
 
 - Windows
-- Visual Studio 2010
-- Xbox 360 SDK
+- Visual Studio 2010 (It's not working for compilation.)
+- Xbox 360 SDK (It's not working for compilation.)
+   Use OXDK to compile the project. https://github.com/MrMilenko/OXDK
 
 Build command used during testing:
 
@@ -153,7 +155,7 @@ Butterscotch360-Refresh.xex
 - Upstream runner: [ButterscotchRunner/Butterscotch](https://github.com/ButterscotchRunner/Butterscotch)
 - Original Xbox 360 port: [ceilingtilefan/Butterscotch-360](https://github.com/ceilingtilefan/Butterscotch-360)
 - Refresh/testing: flaf1x with ChatGPT Codex
-
+- compilation with new method (OXDK) and Hotfix: David2dev-svg
 ## License
 
 This project follows the licensing of the upstream Butterscotch project. See
