@@ -280,7 +280,7 @@ static void ensureTextureCacheRoom(D3D9Renderer* dr) {
     while (dr->loadedTexturePages >= maxLoadedPages) {
         uint32_t victim = UINT_MAX;
         uint32_t oldest = UINT_MAX;
-        for (uint32_t i = 0; i < dr->textureCount; i++) {
+        for (uint32_t i = 0; i < dr->originalTexturePageCount && i < dr->textureCount; i++) {
             if (!dr->textures[i]) continue;
             if ((int32_t)i == dr->currentTextureIndex) continue;
             uint32_t age = dr->textureLastUsedFrame ? dr->textureLastUsedFrame[i] : 0;
@@ -1296,7 +1296,214 @@ static void d3d9ClearScreen(Renderer* renderer, uint32_t color, float alpha) {
     Dev(dr)->Clear(0, NULL, D3DCLEAR_TARGET, D3DCOLOR_ARGB(a, r, g, b), 1.0f, 0);
 }
 
+// ===[ Dynamic sprites captured from the application surface ]===
+// sprite_create_from_surface: resolve the top-left area of the application surface that covers
+// the requested rect into a texture, then register page + TPAG + sprite like the GL backend does.
+static uint8_t* gDynFree = NULL;
+static uint32_t gDynFreeCap = 0;
+static D3D9Renderer* gDynOwner = NULL;
+
+static void dynEnsureCap(D3D9Renderer* dr) {
+    if (gDynOwner != dr) {
+        free(gDynFree);
+        gDynFree = NULL;
+        gDynFreeCap = 0;
+        gDynOwner = dr;
+    }
+    if (gDynFreeCap < dr->textureCount) {
+        uint8_t* n = (uint8_t*)realloc(gDynFree, dr->textureCount);
+        if (!n) return;
+        memset(n + gDynFreeCap, 0, dr->textureCount - gDynFreeCap);
+        gDynFree = n;
+        gDynFreeCap = dr->textureCount;
+    }
+}
+
+static void dynReleasePageTexture(D3D9Renderer* dr, uint32_t i) {
+    if (i >= dr->textureCount || !dr->textures[i]) return;
+    if (dr->currentTextureIndex == (int32_t)i) {
+        flushBatch(dr);
+        dr->currentTextureIndex = -1;
+        Dev(dr)->SetTexture(0, NULL);
+    }
+    ((IDirect3DTexture9*)dr->textures[i])->Release();
+    dr->textures[i] = NULL;
+    dr->textureWidths[i] = 0;
+    dr->textureHeights[i] = 0;
+    if (dr->textureLastUsedFrame) dr->textureLastUsedFrame[i] = 0;
+}
+
+static int32_t dynAcquirePage(D3D9Renderer* dr, int32_t rw, int32_t rh) {
+    dynEnsureCap(dr);
+    uint32_t first = dr->originalTexturePageCount;
+    int32_t slot = -1;
+
+    for (uint32_t i = first; i < dr->textureCount && i < gDynFreeCap; i++) {
+        if (gDynFree[i] && dr->textures[i] && dr->textureWidths[i] == rw && dr->textureHeights[i] == rh) {
+            gDynFree[i] = 0;
+            return (int32_t)i;
+        }
+    }
+    for (uint32_t i = first; i < dr->textureCount; i++) {
+        bool pooled = (i < gDynFreeCap) && gDynFree[i];
+        if (pooled || !dr->textures[i]) {
+            dynReleasePageTexture(dr, i);
+            if (i < gDynFreeCap) gDynFree[i] = 0;
+            slot = (int32_t)i;
+            break;
+        }
+    }
+    if (slot < 0) {
+        uint32_t n = dr->textureCount + 1;
+        void** t = (void**)realloc(dr->textures, n * sizeof(void*));
+        if (!t) return -1;
+        dr->textures = t;
+        int32_t* tw = (int32_t*)realloc(dr->textureWidths, n * sizeof(int32_t));
+        if (!tw) return -1;
+        dr->textureWidths = tw;
+        int32_t* th = (int32_t*)realloc(dr->textureHeights, n * sizeof(int32_t));
+        if (!th) return -1;
+        dr->textureHeights = th;
+        uint32_t* tl = (uint32_t*)realloc(dr->textureLastUsedFrame, n * sizeof(uint32_t));
+        if (!tl) return -1;
+        dr->textureLastUsedFrame = tl;
+        slot = (int32_t)dr->textureCount;
+        dr->textures[slot] = NULL;
+        dr->textureWidths[slot] = 0;
+        dr->textureHeights[slot] = 0;
+        dr->textureLastUsedFrame[slot] = 0;
+        dr->textureCount = n;
+        dynEnsureCap(dr);
+    }
+
+    IDirect3DTexture9* tex = NULL;
+    HRESULT hr = Dev(dr)->CreateTexture((UINT)rw, (UINT)rh, 1, 0, D3DFMT_A8R8G8B8,
+                                        D3DPOOL_DEFAULT, &tex, NULL);
+    if (FAILED(hr) || !tex) {
+        Butterscotch_xdkDiagTrace("D3D9: dynamic page CreateTexture failed %dx%d hr=0x%08X", rw, rh, (unsigned)hr);
+        return -1;
+    }
+    dr->textures[slot] = tex;
+    dr->textureWidths[slot] = rw;
+    dr->textureHeights[slot] = rh;
+    dr->textureLastUsedFrame[slot] = dr->frameCounter;
+    return slot;
+}
+
+static uint32_t dynFindOrAllocTpagSlot(DataWin* dw, uint32_t originalTpagCount) {
+    for (uint32_t i = originalTpagCount; i < dw->tpag.count; i++) {
+        if (dw->tpag.items[i].texturePageId == -1) return i;
+    }
+    uint32_t newIndex = dw->tpag.count;
+    TexturePageItem* items = (TexturePageItem*)realloc(dw->tpag.items, (newIndex + 1) * sizeof(TexturePageItem));
+    if (!items) return UINT_MAX;
+    dw->tpag.items = items;
+    dw->tpag.count = newIndex + 1;
+    memset(&dw->tpag.items[newIndex], 0, sizeof(TexturePageItem));
+    dw->tpag.items[newIndex].texturePageId = -1;
+    return newIndex;
+}
+
 static int32_t d3d9CreateSpriteFromSurface(Renderer* renderer, int32_t surfaceID, int32_t x, int32_t y,
+                                            int32_t w, int32_t h, bool removeback,
+                                            bool smooth, int32_t xorig, int32_t yorig) {
+    (void)removeback; (void)smooth;
+    D3D9Renderer* dr = (D3D9Renderer*)renderer;
+    DataWin* dw = renderer->dataWin;
+    static int logged = 0;
+    if (surfaceID != APPLICATION_SURFACE_ID || !dr->appSurfaceLevel || !dw || w <= 0 || h <= 0 || x < 0 || y < 0) {
+        d3d9DiagLimited(&logged, 64, "D3D9: sprite_create_from_surface unsupported surface=%d rect=%d,%d %dx%d",
+                        surfaceID, x, y, w, h);
+        return -1;
+    }
+    if (x + w > dr->appSurfaceW) w = dr->appSurfaceW - x;
+    if (y + h > dr->appSurfaceH) h = dr->appSurfaceH - y;
+    if (w <= 0 || h <= 0) return -1;
+
+    int32_t rw = (x + w + 31) & ~31;
+    int32_t rh = (y + h + 31) & ~31;
+    if (rw > dr->appSurfaceAllocW) rw = dr->appSurfaceAllocW;
+    if (rh > dr->appSurfaceAllocH) rh = dr->appSurfaceAllocH;
+
+    flushBatch(dr);
+
+    int32_t page = dynAcquirePage(dr, rw, rh);
+    if (page < 0) return -1;
+
+    D3DRECT rect;
+    rect.x1 = 0;
+    rect.y1 = 0;
+    rect.x2 = rw;
+    rect.y2 = rh;
+    Dev(dr)->Resolve(D3DRESOLVE_RENDERTARGET0, &rect, (IDirect3DBaseTexture9*)dr->textures[page],
+                     NULL, 0, 0, NULL, 1.0f, 0, NULL);
+
+    uint32_t tpagIndex = dynFindOrAllocTpagSlot(dw, dr->originalTpagCount);
+    if (tpagIndex == UINT_MAX) {
+        dynEnsureCap(dr);
+        if ((uint32_t)page < gDynFreeCap) gDynFree[page] = 1;
+        return -1;
+    }
+    TexturePageItem* tpag = &dw->tpag.items[tpagIndex];
+    tpag->sourceX = (uint16_t)x;
+    tpag->sourceY = (uint16_t)y;
+    tpag->sourceWidth = (uint16_t)w;
+    tpag->sourceHeight = (uint16_t)h;
+    tpag->targetX = 0;
+    tpag->targetY = 0;
+    tpag->targetWidth = (uint16_t)w;
+    tpag->targetHeight = (uint16_t)h;
+    tpag->boundingWidth = (uint16_t)w;
+    tpag->boundingHeight = (uint16_t)h;
+    tpag->texturePageId = (int16_t)page;
+
+    uint32_t spriteIndex = DataWin_allocSpriteSlot(dw, dr->originalSpriteCount);
+    Sprite* sprite = &dw->sprt.sprites[spriteIndex];
+    sprite->width = (uint32_t)w;
+    sprite->height = (uint32_t)h;
+    sprite->originX = xorig;
+    sprite->originY = yorig;
+    sprite->textureCount = 1;
+    sprite->tpagIndices = (int32_t*)malloc(sizeof(int32_t));
+    sprite->tpagIndices[0] = (int32_t)tpagIndex;
+    sprite->maskCount = 0;
+    sprite->masks = NULL;
+
+    static int createdLog = 0;
+    d3d9DiagLimited(&createdLog, 64, "D3D9: dynamic sprite %u from app surface rect=%d,%d %dx%d page=%d tex=%dx%d",
+                    spriteIndex, x, y, w, h, page, rw, rh);
+    return (int32_t)spriteIndex;
+}
+
+static void d3d9DeleteSprite(Renderer* renderer, int32_t spriteIndex) {
+    D3D9Renderer* dr = (D3D9Renderer*)renderer;
+    DataWin* dw = renderer->dataWin;
+    if (!dw || spriteIndex < 0 || (uint32_t)spriteIndex >= dw->sprt.count) return;
+    if ((uint32_t)spriteIndex < dr->originalSpriteCount) return;
+
+    Sprite* sprite = &dw->sprt.sprites[spriteIndex];
+    if (sprite->textureCount == 0) return;
+
+    dynEnsureCap(dr);
+    for (uint32_t i = 0; i < sprite->textureCount; i++) {
+        int32_t tpagIdx = sprite->tpagIndices[i];
+        if (tpagIdx >= 0 && (uint32_t)tpagIdx >= dr->originalTpagCount && (uint32_t)tpagIdx < dw->tpag.count) {
+            TexturePageItem* tpag = &dw->tpag.items[tpagIdx];
+            int32_t pageId = tpag->texturePageId;
+            if (pageId >= (int32_t)dr->originalTexturePageCount && (uint32_t)pageId < dr->textureCount
+                && (uint32_t)pageId < gDynFreeCap) {
+                gDynFree[pageId] = 1;
+            }
+            tpag->texturePageId = -1;
+        }
+    }
+    free(sprite->tpagIndices);
+    const char* keepName = sprite->name;
+    memset(sprite, 0, sizeof(Sprite));
+    sprite->name = keepName;
+}
+
+static int32_t d3d9CreateSpriteFromSurfaceStub(Renderer* renderer, int32_t surfaceID, int32_t x, int32_t y,
                                             int32_t w, int32_t h, bool removeback,
                                             bool smooth, int32_t xorig, int32_t yorig) {
     (void)renderer;
@@ -1308,7 +1515,7 @@ static int32_t d3d9CreateSpriteFromSurface(Renderer* renderer, int32_t surfaceID
     return -1;
 }
 
-static void d3d9DeleteSprite(Renderer* renderer, int32_t spriteIndex) {
+static void d3d9DeleteSpriteStub(Renderer* renderer, int32_t spriteIndex) {
     (void)renderer; (void)spriteIndex;
     // TODO: implement dynamic sprite deletion
 }
