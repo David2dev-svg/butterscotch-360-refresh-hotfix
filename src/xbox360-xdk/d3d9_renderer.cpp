@@ -1118,17 +1118,19 @@ static void d3d9DrawText(Renderer* renderer, const char* text, float x, float y,
     float alpha = renderer->drawAlpha;
 
     // Resolve font texture page
-    int32_t fontTpagIndex = font->tpagIndex;
+    bool spriteFont = font->isSpriteFont && font->spriteIndex >= 0 && (uint32_t)font->spriteIndex < dw->sprt.count;
+    Sprite* sfSprite = spriteFont ? &dw->sprt.sprites[font->spriteIndex] : NULL;
+    int32_t fontTpagIndex = spriteFont ? 0 : font->tpagIndex;
     if (0 > fontTpagIndex) return;
 
     TexturePageItem* fontTpag = &dw->tpag.items[fontTpagIndex];
     int16_t pageId = fontTpag->texturePageId;
     if (0 > pageId || dr->textureCount <= (uint32_t)pageId) return;
-    ensureTexturePageLoaded(dr, (uint32_t)pageId);
-    if (!dr->textures[pageId]) return;
+    if (!spriteFont) ensureTexturePageLoaded(dr, (uint32_t)pageId);
+    if (!spriteFont && !dr->textures[pageId]) return;
 
-    float texW = (float)dr->textureWidths[pageId];
-    float texH = (float)dr->textureHeights[pageId];
+    float texW = spriteFont ? 1.0f : (float)dr->textureWidths[pageId];
+    float texH = spriteFont ? 1.0f : (float)dr->textureHeights[pageId];
     if (texW <= 0 || texH <= 0) return;
 
     float cr, cg, cb, ca;
@@ -1161,7 +1163,7 @@ static void d3d9DrawText(Renderer* renderer, const char* text, float x, float y,
         sinA = sinf(rad);
     }
 
-    ensureTexture(dr, (int32_t)pageId);
+    if (!spriteFont) ensureTexture(dr, (int32_t)pageId);
 
     // Iterate through lines
     float cursorY = valignOffset;
@@ -1195,14 +1197,48 @@ static void d3d9DrawText(Renderer* renderer, const char* text, float x, float y,
             }
 
             // Compute UVs from glyph position in the font's atlas
-            float u0 = texelStart((float)(fontTpag->sourceX + glyph->sourceX), texW);
-            float v0 = texelStart((float)(fontTpag->sourceY + glyph->sourceY), texH);
-            float u1 = texelEnd((float)(fontTpag->sourceX + glyph->sourceX), (float)glyph->sourceWidth, texW);
-            float v1 = texelEnd((float)(fontTpag->sourceY + glyph->sourceY), (float)glyph->sourceHeight, texH);
+            TexturePageItem* uvTpag = fontTpag;
+            float uvOffX = (float)glyph->sourceX;
+            float uvOffY = (float)glyph->sourceY;
+            float uvW = texW;
+            float uvH = texH;
+            float spriteDY = 0.0f;
+            if (spriteFont) {
+                int32_t glyphIndex = (int32_t)(glyph - font->glyphs);
+                bool okGlyph = false;
+                if (glyphIndex >= 0 && glyphIndex < (int32_t)sfSprite->textureCount) {
+                    int32_t tpagIdx = sfSprite->tpagIndices[glyphIndex];
+                    if (tpagIdx >= 0 && (uint32_t)tpagIdx < dw->tpag.count) {
+                        TexturePageItem* gt = &dw->tpag.items[tpagIdx];
+                        int16_t pid = gt->texturePageId;
+                        if (pid >= 0 && (uint32_t)pid < dr->textureCount) {
+                            ensureTexturePageLoaded(dr, (uint32_t)pid);
+                            if (dr->textures[pid] && dr->textureWidths[pid] > 0 && dr->textureHeights[pid] > 0) {
+                                ensureTexture(dr, (int32_t)pid);
+                                uvTpag = gt;
+                                uvOffX = 0.0f;
+                                uvOffY = 0.0f;
+                                uvW = (float)dr->textureWidths[pid];
+                                uvH = (float)dr->textureHeights[pid];
+                                spriteDY = (float)((int32_t)gt->targetY - sfSprite->originY);
+                                okGlyph = true;
+                            }
+                        }
+                    }
+                }
+                if (!okGlyph) {
+                    cursorX += glyph->shift;
+                    continue;
+                }
+            }
+            float u0 = texelStart((float)(uvTpag->sourceX + uvOffX), uvW);
+            float v0 = texelStart((float)(uvTpag->sourceY + uvOffY), uvH);
+            float u1 = texelEnd((float)(uvTpag->sourceX + uvOffX), (float)glyph->sourceWidth, uvW);
+            float v1 = texelEnd((float)(uvTpag->sourceY + uvOffY), (float)glyph->sourceHeight, uvH);
 
             // Local quad position
             float localX0 = cursorX + glyph->offset;
-            float localY0 = cursorY;
+            float localY0 = cursorY + spriteDY;
             float localX1 = localX0 + (float)glyph->sourceWidth;
             float localY1 = localY0 + (float)glyph->sourceHeight;
 
