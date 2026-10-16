@@ -149,6 +149,16 @@ static bool diagOpenPath(const char* path, bool overwrite) {
     return true;
 }
 
+static bool diagShouldFlush(const char* line) {
+    static DWORD lastFlush = 0;
+    DWORD now = GetTickCount();
+    if (strncmp(line, "BS:", 3) == 0 || strstr(line, "FATAL") || strstr(line, "abort") || (DWORD)(now - lastFlush) >= 500) {
+        lastFlush = now;
+        return true;
+    }
+    return false;
+}
+
 static void diagLog(const char* fmt, ...) {
     char line[1024];
     va_list args;
@@ -164,14 +174,15 @@ static void diagLog(const char* fmt, ...) {
     }
 
     DbgPrint("%s", line);
+    bool doFlush = diagShouldFlush(line);
     if (gDiagFile) {
         fputs(line, gDiagFile);
-        fflush(gDiagFile);
+        if (doFlush) fflush(gDiagFile);
     }
     if (gDiagLog != INVALID_HANDLE_VALUE) {
         DWORD written = 0;
         WriteFile(gDiagLog, line, (DWORD)strlen(line), &written, NULL);
-        FlushFileBuffers(gDiagLog);
+        if (doFlush) FlushFileBuffers(gDiagLog);
     }
 }
 
