@@ -580,7 +580,7 @@ static void diagOverlayDraw(Runner* runner, Renderer* renderer, int32_t frameW, 
 
     char line[256];
     float y = y0 + 12.0f;
-    diagOverlayDrawLine("Butterscotch360-Refresh DIAG  (LB+RB)", &y, 0.42f, 1.0f, 0.90f, 0.45f, 1.0f);
+    diagOverlayDrawLine("Butterscotch360-Refresh HOTFIX DIAG  (LB+RB)", &y, 0.42f, 1.0f, 0.90f, 0.45f, 1.0f);
 
     _snprintf(line, sizeof(line) - 1, "FPS %.1f  dt %.2fms  steps %d  speed %u", gDiagOverlayFps, gDiagOverlayDtMs, gDiagOverlaySteps, roomSpeed);
     line[sizeof(line) - 1] = '\0';
@@ -965,6 +965,142 @@ static char* xdkBuildGameChangePath(const char* currentPath, const char* working
     return out;
 }
 
+// Diagnostic: lists live instances (object name + active alarms) in the log.
+// Looks up the varID of a variable by name in the VARI table (prefers self variables).
+static int32_t diagVarId(DataWin* dw, const char* name) {
+    int32_t found = -1;
+    for (uint32_t i = 0; i < dw->vari.variableCount; i++) {
+        Variable* v = &dw->vari.variables[i];
+        if (v->name && strcmp(v->name, name) == 0) {
+            if (v->instanceType == -1) return v->varID;
+            if (found < 0) found = v->varID;
+        }
+    }
+    return found;
+}
+
+static char* diagVarStr(DataWin* dw, Instance* inst, const char* name) {
+    int32_t id = diagVarId(dw, name);
+    if (id < 0) return safeStrdup("(novar)");
+    RValue v = Instance_getSelfVar(inst, id);
+    return RValue_toString(v);
+}
+
+static void diagDumpWriter(DataWin* dw, Instance* inst) {
+    char* sh = diagVarStr(dw, inst, "halt");
+    char* sp = diagVarStr(dw, inst, "stringpos");
+    char* sn = diagVarStr(dw, inst, "stringno");
+    char* sd = diagVarStr(dw, inst, "dfy");
+    char* os = diagVarStr(dw, inst, "originalstring");
+    int len = (int)strlen(os);
+    int pos = atoi(sp);
+    diagLog("BS: WRITER halt=%s stringpos=%s stringno=%s dfy=%s len=%d", sh, sp, sn, sd, len);
+    char seg[96];
+    for (int off = 0; off < len && off < 400; off += 80) {
+        int n = (len - off < 80) ? (len - off) : 80;
+        for (int k = 0; k < n; k++) {
+            unsigned char c = (unsigned char)os[off + k];
+            seg[k] = (c < 32) ? '?' : (char)c;
+        }
+        seg[n] = 0;
+        diagLog("BS: WRITER str[%d]='%s'", off, seg);
+    }
+    int a = (pos - 30 < 0) ? 0 : pos - 30;
+    if (a > len) a = len;
+    int b = (pos > len) ? len : (pos < 0 ? 0 : pos);
+    int e = (pos + 30 > len) ? len : pos + 30;
+    if (e < b) e = b;
+    char before[40];
+    char after[40];
+    int nb = b - a;
+    if (nb > 38) nb = 38;
+    for (int k = 0; k < nb; k++) { unsigned char c = (unsigned char)os[a + k]; before[k] = (c < 32) ? '?' : (char)c; }
+    before[nb] = 0;
+    int na = e - b;
+    if (na > 38) na = 38;
+    for (int k = 0; k < na; k++) { unsigned char c = (unsigned char)os[b + k]; after[k] = (c < 32) ? '?' : (char)c; }
+    after[na] = 0;
+    diagLog("BS: WRITER pos=%d before='%s' after='%s'", pos, before, after);
+    free(sh); free(sp); free(sn); free(sd); free(os);
+}
+
+// Experiment: appends the missing end marker to a finished OBJ_WRITER page
+// ("%" when a next page exists, "%%" for the last one) and advances stringpos.
+static void diagUnstickWriters(Runner* runner, bool manual) {
+    DataWin* dw = runner->dataWin;
+    int32_t idOS = diagVarId(dw, "originalstring");
+    int32_t idSP = diagVarId(dw, "stringpos");
+    int32_t idH = diagVarId(dw, "halt");
+    int32_t idSN = diagVarId(dw, "stringno");
+    int32_t idMS = diagVarId(dw, "mystring");
+    if (idOS < 0 || idSP < 0 || idH < 0 || idSN < 0 || idMS < 0) {
+        static bool warnedIds = false;
+        if (!warnedIds) { warnedIds = true; diagLog("BS: UNSTICK missing variable ids"); }
+        return;
+    }
+    int n = (int)arrlen(runner->instances);
+    int fixed = 0;
+    for (int i = 0; i < n; i++) {
+        Instance* inst = runner->instances[i];
+        if (!inst || inst->objectIndex != 784) continue;
+        RValue vos = Instance_getSelfVar(inst, idOS);
+        if (vos.type != RVALUE_STRING || vos.string == NULL) continue;
+        int halt = (int)RValue_toReal(Instance_getSelfVar(inst, idH));
+        int pos = (int)RValue_toReal(Instance_getSelfVar(inst, idSP));
+        int sn = (int)RValue_toReal(Instance_getSelfVar(inst, idSN));
+        int len = (int)strlen(vos.string);
+        if (halt != 0 || pos < len) continue;
+        bool hasNext = false;
+        RValue vms = Instance_getSelfVar(inst, idMS);
+        if (vms.type == RVALUE_ARRAY && vms.array != NULL && sn + 1 < GMLArray_length1D(vms.array)) {
+            RValue* slot = GMLArray_slot(vms.array, sn + 1);
+            hasNext = (slot != NULL && slot->type == RVALUE_STRING && slot->string != NULL);
+        }
+        const char* marker = hasNext ? "%" : "%%";
+        size_t mlen = strlen(marker);
+        char* ns = (char*)malloc((size_t)len + mlen + 1);
+        if (!ns) continue;
+        memcpy(ns, vos.string, (size_t)len);
+        memcpy(ns + len, marker, mlen + 1);
+        RValue nv = RValue_makeOwnedString(ns);
+        Instance_setSelfVar(inst, idOS, nv);
+        RValue_free(&nv);
+        Instance_setSelfVar(inst, idSP, RValue_makeReal((GMLReal)(len + 1)));
+        fixed++;
+        static int unstickLogs = 0;
+        if (manual || unstickLogs++ < 60) diagLog("BS: UNSTICK %s writer page=%d len=%d added=%s next=%d", manual ? "manual" : "auto", sn, len, marker, hasNext ? 1 : 0);
+    }
+    if (fixed == 0 && manual) diagLog("BS: UNSTICK nothing to do");
+}
+
+static void diagDumpInstances(Runner* runner) {
+    static int dumps = 0;
+    if (dumps >= 8) return;
+    dumps++;
+    DataWin* dw = runner->dataWin;
+    int n = (int)arrlen(runner->instances);
+    diagLog("BS: INST dump #%d room=%d count=%d", dumps, (int)runner->currentRoomIndex, n);
+    for (int i = 0; i < n && i < 40; i++) {
+        Instance* inst = runner->instances[i];
+        if (!inst) continue;
+        const char* name = "?";
+        if (inst->objectIndex >= 0 && (uint32_t)inst->objectIndex < dw->objt.count && dw->objt.objects[inst->objectIndex].name)
+            name = dw->objt.objects[inst->objectIndex].name;
+        char al[160];
+        al[0] = 0;
+        for (int a = 0; a < GML_ALARM_COUNT; a++) {
+            if (inst->alarm[a] > 0) {
+                char t[24];
+                _snprintf(t, sizeof(t), " a%d=%d", a, (int)inst->alarm[a]);
+                t[sizeof(t) - 1] = 0;
+                strncat(al, t, sizeof(al) - strlen(al) - 1);
+            }
+        }
+        diagLog("BS: INST %d obj=%d(%s)%s", i, (int)inst->objectIndex, name, al);
+        if (strcmp(name, "OBJ_WRITER") == 0) diagDumpWriter(dw, inst);
+    }
+}
+
 VOID __cdecl main() {
     diagOpenFallback();
     diagLog("BUILD parse_guard_diag_v2 %s %s", __DATE__, __TIME__);
@@ -1272,8 +1408,22 @@ VOID __cdecl main() {
         if (diagComboDown && !gDiagOverlayComboWasDown) {
             gDiagOverlayVisible = !gDiagOverlayVisible;
             diagLog("DIAG: overlay %s", gDiagOverlayVisible ? "on" : "off");
+            if (gDiagOverlayVisible) diagDumpInstances(runner);
         }
         gDiagOverlayComboWasDown = diagComboDown;
+        {
+            static bool unstickWasDown = false;
+            bool unstickDown = controllerConnected &&
+                ((buttons & XINPUT_GAMEPAD_LEFT_SHOULDER) != 0) &&
+                ((buttons & XINPUT_GAMEPAD_BACK) != 0) &&
+                ((buttons & XINPUT_GAMEPAD_RIGHT_SHOULDER) == 0);
+            if (unstickDown && !unstickWasDown) diagUnstickWriters(runner, true);
+            unstickWasDown = unstickDown;
+            static bool aWasDown = false;
+            bool aDown = controllerConnected && ((buttons & XINPUT_GAMEPAD_A) != 0);
+            if (aDown && !aWasDown) diagUnstickWriters(runner, false);
+            aWasDown = aDown;
+        }
 
         for (int i = 0; i < xpadMappingCount; i++) {
             WORD mask = xpadMappings[i].xpadButton;

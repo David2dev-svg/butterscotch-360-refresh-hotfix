@@ -29,3 +29,9 @@ flaf1x for the Xbox 360 refresh.
 Put `data.win` next to `default.xex` (`game:\data.win`).
 The sources list is generated from `Butterscotch360.vcxproj`; `.c` files are
 built as C++ like the original MSVC project.
+
+## Dialogue stuck at the end of a fight (Undertale)
+Some dialogue pages have no end marker in certain data.win files (seen with a translated data.win), so the game waits forever. Seen at the end of the Napstablook and Muffet fights and during Mettaton's "...stop Asgore" line.
+- Automatic: if a finished dialogue is stuck, pressing A adds the missing end marker.
+- Manual: hold LB and press Back (without RB). Back also sends Esc to the game: a short press is harmless, do not hold it.
+- Debug: LB+RB toggles an overlay and writes the live instances and the dialogue state to bs360_refresh.log.
