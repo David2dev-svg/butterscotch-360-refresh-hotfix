@@ -1,9 +1,9 @@
-> **Hotfix fork.** Community continuation of
-> [flaf1x/Butterscotch360-Refresh](https://github.com/flaf1x/Butterscotch360-Refresh)
-> (archived), with a new OXDK-based build for Xbox 360. Deltarune is playable to the
-> end on real hardware; Undertale support is experimental.
-> See [HOTFIX.md](HOTFIX.md) for what changed and how to build.
-> No game files or XDK files are included. You must provide your own.
+**Hotfix fork.** Community continuation of
+[flaf1x/Butterscotch360-Refresh](https://github.com/flaf1x/Butterscotch360-Refresh)
+(archived), with a new OXDK-based build for Xbox 360. Deltarune (Chapter 1) has
+been played to the end on real hardware; Undertale runs and is still being tested.
+See [HOTFIX.md](HOTFIX.md) for what changed and how to build.
+No game files or XDK files are included. You must provide your own.
 
 # Butterscotch360-Refresh
 
@@ -19,14 +19,14 @@ but it is not just a rebuild of that old fork. It refreshes the port against a
 much newer Butterscotch codebase and adds the Xbox 360-specific runtime pieces
 needed for current testing:
 
-- Visual Studio 2010 / Xbox 360 SDK project files.
-- OXDK
+- Visual Studio 2010 / Xbox 360 SDK project files (from upstream, not re-tested in this fork).
+- An OXDK build (patched LLVM, `XENON_ABI=1`) that does not need Visual Studio.
 - Xbox 360 D3D9 renderer with point-sampled pixel output.
 - XAudio2 audio backend with streamed OGG music playback.
 - Startup splash/progress screen.
 - Runtime diagnostics written to `bs360_refresh.log`.
 - Toggleable on-screen diagnostics with `LB + RB`.
-- Undertale, NXTale, deltarune compatibility fixes tested on real hardware.
+- Undertale, NXTale and Deltarune compatibility fixes tested on real hardware.
 
 Also, yes, this is double vibe-coded in the funniest possible way: the original
 Butterscotch-360 port was reportedly brought up with Claude Code, and this
@@ -36,9 +36,16 @@ improve, and preserve the port.
 
 ## Current Status
 
-The port has been tested primarily with Undertale v1.08 and NXTale on a real
-Xbox 360. Vanilla Undertale is playable in the tested areas, and NXTale now has
-working console-style borders, controls, sprites, audio, and spear rotation.
+Tested on a real Xbox 360:
+
+- **Deltarune**: the chapter select works (each chapter is loaded in-process) and
+  Chapter 1 has been played to the end. Other chapters use the same mechanism but
+  are less tested.
+- **Undertale v1.08**: playable in the tested areas, including the Muffet,
+  Napstablook and Mettaton fights (see "Dialogue stuck" in HOTFIX.md). A long
+  playthrough is still ongoing.
+- **NXTale**: console-style borders, controls, sprites, audio and spear rotation
+  worked with the earlier build.
 
 This is still experimental software. Expect missing GameMaker functions, game
 specific quirks, and Xbox 360 memory limits to matter.
@@ -52,17 +59,25 @@ testing the directory was:
 Hdd1:/Btrsctch
 ```
 
-Expected files:
+Undertale:
 
 ```text
-Butterscotch360-Refresh.xex
+Butterscotch360-Refresh.xex   (default.xex when built with OXDK)
 data.win
 *.ogg / *.wav audio files used by the game
 splash.png (optional)
 CONFIG.JSN (optional)
 ```
 
-`splash.png` is shown during startup while `data.win` is parsed. The progress
+Deltarune:
+
+```text
+data.win               (the chapter select)
+chapter1_windows/      (data.win and audiogroup*.dat of each chapter)
+mus/                   (shared music, chapters ask for ../mus/)
+```
+
+splash.png is shown during startup while data.win is parsed. The progress
 bar and stage text are drawn over the splash.
 
 ## Controls
@@ -76,14 +91,17 @@ Default Undertale-style keyboard mapping through the Xbox 360 controller:
 - Y: X key
 - Start / Back: Escape
 - Right trigger: temporary speed-up for testing
-- LB + RB: toggle the on-screen diagnostic overlay
+- LB + RB: toggle the on-screen diagnostic overlay (also writes the live
+  instances and the dialogue state to the log)
+- A on a stuck dialogue, or hold LB and press Back: adds the missing end marker
+  to the dialogue so the fight can continue (do not hold Back, it is also Esc)
 
 The diagnostic overlay shows FPS, frame timing, room name/index, instance count,
 application surface state, controller state, and memory usage.
 
 ## Optional CONFIG.JSN
 
-`CONFIG.JSN` can be placed next to `data.win`.
+CONFIG.JSN can be placed next to data.win.
 
 Example:
 
@@ -100,63 +118,95 @@ Example:
 
 Notes:
 
-- `gamepadApi` defaults to `false` because some Undertale/NXTale builds read
+- gamepadApi defaults to false because some Undertale/NXTale builds read
   both keyboard-style input and GameMaker gamepad input, which can duplicate
   movement.
-- `os_type` is kept as Windows by default for compatibility with tested builds.
-- `controllerMappings` uses XInput button masks as keys and GameMaker key codes
+- os_type is kept as Windows by default for compatibility with tested builds.
+- controllerMappings uses XInput button masks as keys and GameMaker key codes
   as values.
 
 ## Building
 
-Requirements:
+### OXDK (recommended, tested)
 
-- Windows
-- Visual Studio 2010 (It's not working for compilation.)
-- Xbox 360 SDK (It's not working for compilation.)
-   Use OXDK to compile the project. https://github.com/MrMilenko/OXDK
+This is the build used for every release of this fork. You provide your own
+OXDK (with its patched LLVM that has the
+xenon-abi feature) and your own Xbox 360 XDK. Nothing from the XDK is included
+in this repository.
 
-Build command used during testing:
+```sh
+cd oxdk
+python3 gen_srcs.py
+make XENON_ABI=1 -f Makefile.full
+```
+
+- gen_srcs.py reads Butterscotch360.vcxproj and generates the source list.
+  The .c files are built as C++, like the original Visual Studio project.
+- Makefile.full expects OXDK in $(HOME)/OXDK. Edit OXDK_DIR if it is
+  elsewhere.
+- On a case-sensitive filesystem some XDK headers need case links, for example
+  ln -s xobjbase.h XObjBase.h inside the XDK include folder.
+- The result is oxdk/default.xex. See HOTFIX.md for more details.
+
+### Visual Studio 2010 + official Xbox 360 SDK (not re-tested)
+
+This is the original upstream project. It has NOT been re-tested after the
+changes in this fork, so it may fail. If it does, please open an issue with the
+lines that contain error C and your XDK version.
 
 ```bat
 call "C:\Program Files (x86)\Microsoft Visual Studio 10.0\VC\vcvarsall.bat" x86
 "C:\Windows\Microsoft.NET\Framework\v4.0.30319\MSBuild.exe" Butterscotch360.sln /t:Rebuild /p:Configuration=Release /p:Platform="Xbox 360" /m:1
 ```
 
-The built binary is produced as:
-
-```text
-Release/Butterscotch.xex
-```
-
-For distribution/testing it is usually copied or renamed to:
-
-```text
-Butterscotch360-Refresh.xex
-```
+The built binary is produced as Release/Butterscotch.xex.
 
 ## What Changed From Butterscotch-360
 
 - Refreshed core runner code from a newer Butterscotch base.
-- Added guarded `data.win` parsing diagnostics for Xbox crashes.
+- Added guarded data.win parsing diagnostics for Xbox crashes.
 - Added Xbox 360 startup splash/progress rendering.
-- Added D3D9 support for real `application_surface` rendering.
+- Added D3D9 support for real application_surface rendering.
 - Fixed byte-order and texture-page parsing issues seen on Xbox 360.
 - Added lazy texture-page loading and reduced texture memory pressure.
 - Reworked audio around streamed OGG playback to fix speed, stutter, and missing
   music issues.
 - Fixed point sampling and 720p presentation for crisp pixel output.
 - Added NXTale-specific compatibility improvements without changing default
-  `os_type` away from Windows.
+  os_type away from Windows.
 - Added on-screen diagnostics for long hardware test sessions.
+
+## What Changed In This Hotfix Fork
+
+- OXDK build, no Visual Studio needed (oxdk/).
+- Deltarune: chapter switching (game_change) with launch arguments, shared
+  mus/ folder, texture decoder for BZip2 + QOI pages, and sprite fonts (the
+  HP numbers in battle).
+- Undertale: sprite_create_from_surface for the application surface (fixes the
+  Muffet fight arena), ds_map_delete and ds_map_keys_to_array, and a
+  workaround for dialogue pages without an end marker that froze the end of the
+  Napstablook, Muffet and Mettaton fights.
+- File system and audio group fixes, and less log flushing (removes frame
+  drops when a sound plays for the first time).
+
+## Known Issues
+
+- Only the application surface is supported: surface_create and drawing to
+  other surfaces are not implemented (reported: the dying Undyne sprite).
+- Reported: music cuts out and the frame rate drops in heavy fights (Omega
+  Flowey, Asriel, Lemon Bread), and the camera in Alphys' lab does not follow
+  the player.
+- Reported: Deltarune with a localization mod can show invisible text.
+- The Visual Studio build is not re-tested.
 
 ## Credits
 
-- Upstream runner: [ButterscotchRunner/Butterscotch](https://github.com/ButterscotchRunner/Butterscotch)
-- Original Xbox 360 port: [ceilingtilefan/Butterscotch-360](https://github.com/ceilingtilefan/Butterscotch-360)
+- Upstream runner: ButterscotchRunner/Butterscotch
+- Original Xbox 360 port: ceilingtilefan/Butterscotch-360
 - Refresh/testing: flaf1x with ChatGPT Codex
-- compilation with new method (OXDK) and Hotfix: David2dev-svg
+- OXDK build and hotfixes: David2dev-svg (developed with Claude as an assistant)
+
 ## License
 
 This project follows the licensing of the upstream Butterscotch project. See
-[LICENSE](LICENSE).
+LICENSE.
